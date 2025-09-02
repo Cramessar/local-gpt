@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+.env
+.env.local
+.env.*.local
+*.log
+
+# Virtualenv
+.venv/
+venv/
+ENV/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.next/
+out/
+dist/
+
+# Docker
+*.pid
+*.sock
+*.tmp
+*.swp
+*.bak
+*.orig
+/data/chroma
+/data/files
+
+# VSCode / JetBrains
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

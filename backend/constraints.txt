@@ -1,0 +1,2 @@
+# Hard-block the abandoned package. The marker makes it impossible to install.
+pycrypto==0; python_version<'0'

@@ -116,7 +116,7 @@ graph TD
   API --> MON
   DEP --> UI
   DEP --> API
-
+```
 
 ---
 

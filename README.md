@@ -119,16 +119,19 @@ sequenceDiagram
 
 ---
 
-✅ Next Possible Improvements
- Add authentication (multi-user)
+### 🚀 Stretch Goals (Future Magic ✨)
 
- Add markdown & PowerPoint extraction
+| Idea | Why it’s awesome |
+|------|--------------------|
+| 🌐 **Remote / Web Access** | Host LocalGPT on a server or LAN and access it from any browser or device. |
+| 🤖 **Local Function Calling Tools** | Let the AI run local tools: search files, extract chunks, open PDFs, run shell commands (secure sandbox). |
+| 📊 **RAG Analytics Dashboard** | Track embeddings DB size, query latency, chunk retrieval accuracy, GPU/CPU performance. |
+| 🗂 **Multiple RAG Collections / Workspaces** | Separate documents by project, user, or team — isolate knowledge bases for cleaner context. |
+| 📝 **In-App Document Viewer** | Preview stored chunks, pages, metadata, and delete or re-index individual files easily. |
+| 🧠 **Hybrid Search (Semantic + Keyword)** | Boost precision by combining vector similarity + keyword filtering for better document answers. |
+| 📡 **API Endpoints for External Apps** | Expose `/chat`, `/rag/query`, `/upload` so other apps or scripts can use LocalGPT as an API. |
+| 🎯 **Relevance Scoring & Feedback Loop** | Let users upvote/downvote answers and use that to improve ranking over time. |
 
- GUI for browsing indexed chunks
-
- Switch to LiteLLM or OpenAI function calling
-
- Save chat history per user
 
 ---
 

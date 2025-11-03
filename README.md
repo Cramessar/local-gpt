@@ -100,22 +100,17 @@ What programming languages are mentioned in my resume?"
 ---
 
 ```mermaid
-graph TD
-  UI[Frontend: Next.js / React / TS]
-  API[Backend: FastAPI / Python]
-  DB[(ChromaDB)]
-  EMB[Embeddings: ONNX MiniLM / SentenceTransformer]
-  LLM[vLLM / Ollama]
-  MON[Monitoring: psutil + pynvml]
-  DEP[Deployment: Docker Compose]
+flowchart TD
+  U[Upload PDF/DOCX/TXT] --> EX[Extract text]
+  EX --> CH[Chunk text]
+  CH --> EM[Embed (ONNX MiniLM)]
+  EM --> DB[(ChromaDB)]
 
-  UI --> API
-  API --> DB
-  API --> EMB
-  API --> LLM
-  API --> MON
-  DEP --> UI
-  DEP --> API
+  Q[User question] --> QS[Query Chroma (top-k)]
+  QS --> CT[Build context block]
+  CT --> LLM[LLM via vLLM/Ollama]
+  LLM --> A[Answer (uses context)]
+
 ```
 
 ---

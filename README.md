@@ -100,16 +100,20 @@ What programming languages are mentioned in my resume?"
 ---
 
 ```mermaid
-flowchart TD
-  U[Upload PDF/DOCX/TXT] --> EX[Extract text]
-  EX --> CH[Chunk text]
-  CH --> EM[Embed (ONNX MiniLM)]
-  EM --> DB[(ChromaDB)]
+sequenceDiagram
+  participant User
+  participant UI
+  participant API
+  participant VS as ChromaDB
+  participant LLM
 
-  Q[User question] --> QS[Query Chroma (top-k)]
-  QS --> CT[Build context block]
-  CT --> LLM[LLM via vLLM/Ollama]
-  LLM --> A[Answer (uses context)]
+  User->>UI: Ask question (Use docs ON)
+  UI->>API: POST /tool { name: rag_query }
+  API->>VS: Query top-k embeddings
+  VS-->>API: Return chunks
+  API->>LLM: Chat completion with context
+  LLM-->>API: Answer
+  API-->>UI: Response
 
 ```
 

@@ -1,114 +1,144 @@
 # 💻 Local GPT
 
-Local-first AI assistant with:
-
-- **Chat UI** (Next.js + React)
-- **Toolserver** (FastAPI + Python)
-- **Resource Monitor** (CPU, GPU, Memory via psutil + NVML)
-- **Docs & RAG** (upload PDFs/DOCs/CSVs and ask questions)
-- **Dockerized** for one-line setup
+Local-first AI assistant with full document RAG, offline LLM chat, system monitoring, and Dockerized deployment.
 
 ---
 
-## 🚀 Features
-- 🔹 Chat with local LLMs via **vLLM** or **Ollama**
-- 🔹 Real-time system monitoring (CPU, RAM, GPU)
-- 🔹 Document upload & indexing (PDF, DOCX, CSV, XLSX)
-- 🔹 Retrieval-Augmented Generation (RAG) on your own files
-- 🔹 Easy Docker setup (`docker compose up`)
+## ✅ What’s Working
+
+| Feature | Status | Notes |
+|---------|--------|--------|
+| ✅ Local Chat (vLLM / Ollama) | Fully working | Supports openai-compatible models via vLLM & Ollama models locally |
+| ✅ Docs Upload + RAG | Fully working | PDF/DOCX/TXT uploaded, chunked, stored in ChromaDB, and queried in chat |
+| ✅ Toolserver API | Fully working | `/rag/upload`, `/rag/list`, `/tool (rag_query)`, etc. |
+| ✅ Resource Monitoring | Fully working | GPU/CPU/RAM shown in UI using psutil + NVML |
+| ✅ Dockerized Setup | Fully working | One command brings up entire stack |
+| ⚙️ PDF Text Extraction | Working | Uses `pdfplumber` & `PyMuPDF` |
+| ⚙️ Embeddings | Working | ONNX MiniLM L6-V2 or SentenceTransformer fallback |
+| ⚙️ ChromaDB Vector Store | Working | Persistent at `/data/chroma_v2` |
+| 🛠 RAG in Chat | Working | Injects context as system messages when enabled |
 
 ---
 
-## 📂 Project Structure
+## 📂 Updated Project Structure
 ```
 local-gpt/
-├── frontend/            # Next.js chat UI
-│   ├── components/      # ResourcePanel, DocTools, etc.
-│   ├── pages/           # Chat + RAG UI
-│   └── public/
-├── toolserver/          # FastAPI backend
-│   ├── app.py           # FastAPI entry
-│   ├── rag_routes.py    # Upload + RAG endpoints
-│   ├── vectorstore.py   # ChromaDB integration
-│   ├── file_extract.py  # Extract text from PDFs, DOCX, XLSX
-│   └── requirements.txt
 ├── docker-compose.yml
 ├── Dockerfile
-└── README.md
+├── README.md
+│
+├── backend/ # FastAPI Toolserver
+│ ├── app.py # FastAPI entry
+│ ├── tool_router.py # /tool → rag_query, rag_recent, etc.
+│ ├── rag_routes.py # /rag/upload, /rag/list
+│ ├── vectorstore.py # ChromaDB logic (add/query)
+│ ├── file_extract.py # PDF/DOCX parsing
+│ ├── tools/
+│ │ ├── init.py
+│ │ ├── rag.py # rag_upsert implementation
+│ │ ├── system.py # System tool example
+│ └── requirements.txt
+│
+├── web/ (or frontend/) # Next.js UI
+│ ├── next.config.js
+│ ├── package.json
+│ ├── pages/
+│ │ ├── index.tsx # Main chat UI + RAG sidebar
+│ │ ├── api/chat.ts # Handles RAG + chat -> vLLM/Ollama
+│ ├── components/
+│ │ ├── ChatWindow.tsx
+│ │ ├── DocsRagPanel.tsx # Upload + index docs UI
+│ │ ├── ResourcePanel.tsx # CPU/GPU monitor
+│ └── lib/
+│ ├── llm.ts # callOpenAI / callOllama client
+│ ├── toolserver.ts # helper for hitting /tool
+│
+└── data/ (Docker volume)
+├── files/ # Uploaded docs
+└── chroma_v2/ # Vector DB
 ```
+
 
 ---
 
-## 🐳 Setup with Docker
+## 🚀 Run with Docker
+
 ```bash
-# Build & start
 docker compose up --build
 ```
+Frontend → http://localhost:3000
 
-Services:
-- **Frontend** → http://localhost:3000  
-- **Toolserver** → http://localhost:8000  
+Toolserver → http://localhost:8000
+
+Uploaded files → saved in Docker volume /data/files
 
 ---
 
-## 🧑‍💻 Local Dev (without Docker)
+📚 How RAG Works (Now Fully Functional 🎉)
+Upload PDF/DOCX/TXT in sidebar.
 
-### Backend
-```bash
-cd toolserver
-python -m venv .venv
-source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-pip install --upgrade pip
-pip install -r requirements.txt
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+Toolserver:
+
+Extracts text → splits into chunks
+
+Stores embeddings in ChromaDB
+
+In chat, enable ✅ "Use docs (RAG)"
+
+The API now:
+
+Calls POST /tool → rag_query
+
+Gets top-k chunks
+
+Injects them as system context into the LLM request
+
+Local LLM answers using your file content.
+
+---
+🧠 Example RAG Prompt
+After uploading Software_Engineer.pdf:
+
+```pgsql
+
+Using Software_Engineer.pdf in collection default,
+summarize the Summary section and suggest improvements.
 ```
-
-### Frontend
-```bash
-cd frontend
-npm install
-npm run dev
+Or a tool-style prompt:
 ```
+"Use the docs I uploaded to answer:
+What programming languages are mentioned in my resume?"
+```
+---
+
+🛠 Tech Stack
+```
+Layer	Tech
+Frontend	Next.js + React + TypeScript
+Backend (Toolserver)	FastAPI + Python
+Vector DB	ChromaDB
+Embeddings	ONNX MiniLM or SentenceTransformer
+LLM Runtime	vLLM / Ollama
+Monitoring	psutil + pynvml
+Deployment	Docker Compose
+```
+---
+
+✅ Next Possible Improvements
+ Add authentication (multi-user)
+
+ Add markdown & PowerPoint extraction
+
+ GUI for browsing indexed chunks
+
+ Switch to LiteLLM or OpenAI function calling
+
+ Save chat history per user
 
 ---
 
-## 📚 RAG (Docs & Uploads)
-1. Upload PDFs/DOCX/CSVs/XLSX in the **sidebar**
-2. They get chunked + stored in **ChromaDB**
-3. Ask questions in the chat with **“Use docs (RAG)”** enabled
+📄 License
+MIT — free to modify, share, and build on.
 
----
-
-## ⚡ Requirements
-- Python 3.11
-- Node 18+
-- Docker Desktop (if using Docker)
-- (Optional) NVIDIA GPU + drivers for GPU monitoring
-
----
-
-## 🛠️ Tech Stack
-- **Frontend:** Next.js (React + TypeScript)
-- **Backend:** FastAPI (Python 3.11)
-- **DB:** ChromaDB (vector store)
-- **RAG:** `pdfplumber`, `python-docx`, `pandas`, `PyMuPDF`
-- **Monitoring:** `psutil`, `pynvml`
-
----
-
-## 📝 Roadmap
-- [ ] Add authentication for multi-user access  
-- [ ] Support more file formats (PowerPoint, Markdown)  
-- [ ] Improve GPU/CPU charts  
-- [ ] Plug in custom LLMs via API  
-
----
-
-## 🤝 Contributing
-PRs and issues welcome!  
-Please open an issue before large changes.
-
----
-
-## 📄 License
-MIT — free to use, modify, and share.
+Made with ☕ + 🤖 by Christopher Ramessar
+Because boredom needed a hobby.

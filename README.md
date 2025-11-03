@@ -74,26 +74,14 @@ Uploaded files → saved in Docker volume /data/files
 
 ---
 
-📚 How RAG Works (Now Fully Functional 🎉)
-Upload PDF/DOCX/TXT in sidebar.
+| Step | What Happens |
+|------|---------------|
+| 1️⃣ Upload | PDF / DOCX / TXT in sidebar |
+| 2️⃣ Process | Toolserver extracts → chunks → embeds → stores in ChromaDB |
+| 3️⃣ Enable RAG | Toggle **Use docs (RAG)** in the chat UI |
+| 4️⃣ Query | API calls `POST /tool (rag_query)` and retrieves top-k chunks |
+| 5️⃣ LLM Answer | Chunks are injected as context → local LLM answers using your content |
 
-Toolserver:
-
-Extracts text → splits into chunks
-
-Stores embeddings in ChromaDB
-
-In chat, enable ✅ "Use docs (RAG)"
-
-The API now:
-
-Calls POST /tool → rag_query
-
-Gets top-k chunks
-
-Injects them as system context into the LLM request
-
-Local LLM answers using your file content.
 
 ---
 🧠 Example RAG Prompt
@@ -111,17 +99,22 @@ What programming languages are mentioned in my resume?"
 ```
 ---
 
-🛠 Tech Stack
-```
-Layer	Tech
-Frontend	Next.js + React + TypeScript
-Backend (Toolserver)	FastAPI + Python
-Vector DB	ChromaDB
-Embeddings	ONNX MiniLM or SentenceTransformer
-LLM Runtime	vLLM / Ollama
-Monitoring	psutil + pynvml
-Deployment	Docker Compose
-```
+```mermaid
+graph TD
+  UI[Frontend: Next.js / React / TS]
+  API[Backend: FastAPI / Python]
+  DB[(ChromaDB)]
+  LLM[vLLM / Ollama]
+  Monitor[psutil + pynvml]
+  Deploy[Docker Compose]
+
+  UI --> API
+  API --> DB
+  API --> LLM
+  API --> Monitor
+  Deploy --> UI
+  Deploy --> API
+
 ---
 
 ✅ Next Possible Improvements

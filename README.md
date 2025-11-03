@@ -104,16 +104,19 @@ graph TD
   UI[Frontend: Next.js / React / TS]
   API[Backend: FastAPI / Python]
   DB[(ChromaDB)]
+  EMB[Embeddings: ONNX MiniLM / SentenceTransformer]
   LLM[vLLM / Ollama]
-  Monitor[psutil + pynvml]
-  Deploy[Docker Compose]
+  MON[Monitoring: psutil + pynvml]
+  DEP[Deployment: Docker Compose]
 
   UI --> API
   API --> DB
+  API --> EMB
   API --> LLM
-  API --> Monitor
-  Deploy --> UI
-  Deploy --> API
+  API --> MON
+  DEP --> UI
+  DEP --> API
+
 
 ---
 

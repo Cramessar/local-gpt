@@ -1,92 +1,64 @@
+import contextlib
+# backend/rag_routes.py
 import os
 import uuid
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Iterable
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from file_extract import extract_text_from_file  # your existing helper
-from vectorstore import add_docs                 # your existing vector add
-
-# ---------------------------
-# Setup
-# ---------------------------
+from file_extract import extract_text_from_file
+from vectorstore import add_docs
 
 UPLOAD_DIR = os.environ.get("FILE_SANDBOX", "/data/files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 logger = logging.getLogger("rag")
 if not logger.handlers:
-    # Basic console logging (INFO by default)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 router = APIRouter()
 
 
-# ---------------------------
-# Utilities
-# ---------------------------
-
 def _clean_text(s: Optional[str]) -> str:
     if not s:
         return ""
-    # Normalize newlines, strip obvious “empty” padding
     s = s.replace("\r\n", "\n").replace("\r", "\n")
-    # Collapse long runs of whitespace but keep paragraph breaks
     lines = [ln.strip() for ln in s.split("\n")]
-    # Keep blank lines (paragraph hints) but avoid long whitespace streaks
     return "\n".join(lines).strip()
 
 
-def _chunk_text(
-    text: str,
-    chunk_size: int = 1200,
-    overlap: int = 200,
-    min_chunk_chars: int = 40,
-) -> List[str]:
-    """
-    Greedy word/line-aware chunking with overlap.
-    Ensures we only keep chunks with meaningful content.
-    """
+def _chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200, min_chunk_chars: int = 40) -> List[str]:
     text = _clean_text(text)
     if not text:
         return []
-
     chunks: List[str] = []
     n = len(text)
     start = 0
-
     while start < n:
         end = min(n, start + chunk_size)
-
         if end < n:
-            # Try to cut on a newline, otherwise last space, to make nicer chunks
             cut_nl = text.rfind("\n", start, end)
             cut_sp = text.rfind(" ", start, end)
             cut = max(cut_nl, cut_sp)
-            if cut != -1 and cut > start + 100:  # avoid microscopic tail chunks
+            if cut != -1 and cut > start + 100:
                 end = cut
-
         chunk = text[start:end].strip()
         if len(chunk) >= min_chunk_chars:
             chunks.append(chunk)
-
         if end >= n:
             break
-        # Move with overlap
         start = max(end - overlap, 0)
-
-        # Safety to avoid infinite loop if something goes off
-        if len(chunks) > 50000:  # absurdly high guardrail
+        if len(chunks) > 50000:
             break
-
     return chunks
 
 
-def _save_upload_to_disk(upload: UploadFile) -> Tuple[str, str, int]:
+async def _save_streaming(upload: UploadFile) -> Tuple[str, str, int]:
     """
-    Save the upload to /data/files (or FILE_SANDBOX), return (saved_path, safe_name, nbytes).
+    Save an UploadFile to disk in chunks. Returns (dest_path, saved_name, byte_count).
+    This avoids the occasional b'' return you can get from a single .read().
     """
     if not upload.filename:
         raise HTTPException(400, "Missing filename")
@@ -94,153 +66,178 @@ def _save_upload_to_disk(upload: UploadFile) -> Tuple[str, str, int]:
     safe_name = f"{uuid.uuid4().hex}_{os.path.basename(upload.filename)}"
     dest_path = os.path.join(UPLOAD_DIR, safe_name)
 
-    # Read whole file into memory then write (fast & simple)
-    # If you want streaming save for large files, switch to chunked write.
-    data = upload.file.read()
-    with open(dest_path, "wb") as f:
-        f.write(data)
+    size = 0
+    try:
+        with open(dest_path, "wb") as out:
+            while True:
+                chunk = await upload.read(1024 * 1024)  # 1 MiB
+                if not chunk:
+                    break
+                out.write(chunk)
+                size += len(chunk)
+    finally:
+        # reset file pointer for any further processing (usually not needed, but safe)
+        try:
+            await upload.seek(0)
+        except Exception:
+            pass
 
-    return dest_path, safe_name, len(data)
+    if size == 0:
+        # Delete the 0-byte file so list view stays honest
+        with contextlib.suppress(Exception):
+            os.remove(dest_path)
+        raise HTTPException(
+            400,
+            "Empty upload (0 bytes). Ensure the browser sent multipart/form-data with a real file.",
+        )
+
+    return dest_path, safe_name, size
 
 
-# ---------------------------
-# Routes
-# ---------------------------
+@router.get("/rag/list")
+def rag_list():
+    items = []
+    try:
+        for name in sorted(os.listdir(UPLOAD_DIR)):
+            path = os.path.join(UPLOAD_DIR, name)
+            if os.path.isfile(path):
+                try:
+                    items.append({"name": name, "bytes": os.path.getsize(path)})
+                except Exception:
+                    items.append({"name": name, "bytes": None})
+    except Exception as e:
+        raise HTTPException(500, f"List failed: {e}")
+    return {"dir": UPLOAD_DIR, "files": items}
+
 
 @router.post("/rag/upload")
 async def rag_upload(
-    file: UploadFile = File(..., description="Single file upload"),
+    request: Request,
     collection: str = Form("default"),
+    file: Optional[UploadFile] = File(None),
+    files: Optional[List[UploadFile]] = File(None),
 ):
     """
-    Upload ONE file, extract text, chunk, and index into the given collection.
-    Returns detailed diagnostics so the UI can explain success/failure clearly.
+    Accepts:
+      - file=<UploadFile>
+      - files=<UploadFile> (single)
+      - files=<UploadFile>[] (multiple)
+      - ANY other field name containing UploadFile(s)
     """
-    # Save
-    dest_path, safe_name, nbytes = _save_upload_to_disk(file)
-    logger.info(f"[RAG] Saved upload -> {dest_path} ({nbytes} bytes)")
+    # Collect UploadFile objects from declared params first…
+    candidates: List[UploadFile] = []
+    if file is not None:
+        candidates.append(file)
+    if files:
+        candidates.extend([f for f in files if f is not None])
 
-    # Extract (your helper decides which backend to use & returns meta)
+    # …then sweep the raw form in case the frontend used different field names (e.g., 'files[]')
     try:
-        text, meta_hint = extract_text_from_file(dest_path)
-    except Exception as e:
-        logger.exception(f"[RAG] Extraction hard failure for {file.filename}: {e}")
-        raise HTTPException(500, f"Failed to extract text: {e}")
+        form = await request.form()
+        for key, val in form.multi_items():
+            if isinstance(val, UploadFile) and val not in candidates:
+                candidates.append(val)
+            # val can also be list-like, but FormData already flattens via multi_items()
+    except Exception:
+        pass
 
-    text = _clean_text(text)
-    engine = (meta_hint or {}).get("engine")
-    ext = (meta_hint or {}).get("ext")
-    note = (meta_hint or {}).get("note")
+    if not candidates:
+        raise HTTPException(400, "No file(s) provided. Use field name 'file' or 'files' (array) in multipart/form-data.")
 
-    # Log a short preview to help debug "0 chunks" scenarios
-    preview = (text[:300] + "…") if text and len(text) > 300 else (text or "")
-    logger.info(
-        f"[RAG] Extracted from '{file.filename}' via {engine or 'unknown'} "
-        f"(ext={ext}, note={note}) | chars={len(text)} | preview={preview!r}"
-    )
+    indexed = []
+    total_chunks = 0
 
-    info = {
-        "filename": file.filename,
-        "saved_as": safe_name,
-        "bytes": nbytes,
-        "ext": ext,
-        "engine": engine,
-        "note": note,
-        "chars_extracted": len(text or ""),
-    }
+    for up in candidates:
+        dest_path, saved_name, nbytes = await _save_streaming(up)
+        logger.info(f"[RAG] Saved upload -> {dest_path} ({nbytes} bytes)")
 
-    # If no text -> short-circuit with a very explicit message
-    if not text:
-        message = (
-            "No extractable text found. If this is a scanned PDF, enable OCR or upload a text-based version. "
-            "DOCX files must contain real text (not images)."
-        )
-        logger.warning(f"[RAG] Empty text for '{file.filename}'. {message}")
-        return JSONResponse(
-            {
-                "ok": False,
-                "indexed": [{"filename": file.filename, "chunks": 0, "info": info}],
-                "total_chunks": 0,
-                "message": message,
-            },
-            status_code=200,
-        )
+        try:
+            text, meta_hint = extract_text_from_file(dest_path)
+        except Exception as e:
+            logger.exception(f"[RAG] Extraction hard failure for {up.filename}: {e}")
+            raise HTTPException(500, f"Failed to extract text: {e}")
 
-    # Chunk
-    chunks = _chunk_text(text)
-    if not chunks:
-        message = (
-            "Text was extracted but chunking produced 0 chunks. "
-            "This can happen when the document only has very short lines or heavy non-text content."
-        )
-        logger.warning(f"[RAG] 0 chunks after chunking for '{file.filename}'.")
-        return JSONResponse(
-            {
-                "ok": False,
-                "indexed": [{"filename": file.filename, "chunks": 0, "info": info}],
-                "total_chunks": 0,
-                "message": message,
-                "preview": preview,
-            },
-            status_code=200,
-        )
+        text = _clean_text(text)
+        engine = (meta_hint or {}).get("engine")
+        ext = (meta_hint or {}).get("ext")
+        note = (meta_hint or {}).get("note")
+        preview = (text[:300] + "…") if text and len(text) > 300 else (text or "")
 
-    # Index
-    metadatas = [{"filename": file.filename, "chunk": i} for i in range(len(chunks))]
-    try:
-        added = add_docs(chunks, metadatas, collection=collection)
-    except Exception as e:
-        logger.exception(f"[RAG] Vector add failed for '{file.filename}': {e}")
-        raise HTTPException(500, f"Failed to index chunks: {e}")
+        info = {
+            "filename": up.filename,
+            "saved_as": saved_name,
+            "bytes": nbytes,
+            "ext": ext,
+            "engine": engine,
+            "note": note,
+            "chars_extracted": len(text or ""),
+        }
 
-    logger.info(
-        f"[RAG] Indexed {len(chunks)} chunk(s) for '{file.filename}' into collection '{collection}'."
-    )
+        if not text:
+            logger.warning(f"[RAG] Empty text for '{up.filename}'. engine={engine} ext={ext}")
+            indexed.append({"filename": up.filename, "chunks": 0, "info": info, "preview": preview})
+            continue
+
+        chunks = _chunk_text(text)
+        if not chunks:
+            logger.warning(f"[RAG] 0 chunks after chunking for '{up.filename}'.")
+            indexed.append({"filename": up.filename, "chunks": 0, "info": info, "preview": preview})
+            continue
+
+        metadatas = [{"filename": up.filename, "chunk": i} for i in range(len(chunks))]
+        try:
+            add_docs(chunks, metadatas, collection=collection)
+        except Exception as e:
+            logger.exception(f"[RAG] Vector add failed for '{up.filename}': {e}")
+            raise HTTPException(500, f"Failed to index chunks: {e}")
+
+        logger.info(f"[RAG] Indexed {len(chunks)} chunk(s) for '{up.filename}' into '{collection}'.")
+        total_chunks += len(chunks)
+        indexed.append({"filename": up.filename, "chunks": len(chunks), "info": info, "preview": preview})
 
     return JSONResponse(
-        {
-            "ok": True,
-            "indexed": [{"filename": file.filename, "chunks": len(chunks), "info": info}],
-            "total_chunks": len(chunks),
-            "added": added,
-            "collection": collection,
-            # A tiny preview helps users confirm we actually saw their doc
-            "preview": preview,
-        },
+        {"ok": total_chunks > 0, "indexed": indexed, "total_chunks": total_chunks, "collection": collection},
         status_code=200,
     )
 
 
 @router.get("/rag/diag")
 def rag_diag():
-    """
-    Lightweight diagnostic of available PDF parsers so you can see what's inside the container.
-    """
-    out = {"have_pymupdf": False, "have_pdfminer": False, "have_pdfplumber": False, "have_python_docx": False}
+    out = {
+        "have_pymupdf": False,
+        "have_pdfminer": False,
+        "have_pdfplumber": False,
+        "have_python_docx": False,
+        "have_openpyxl": False,
+        "have_pytesseract": False,
+        "have_tesseract_cmd": False,
+    }
     try:
-        import fitz  # PyMuPDF
-        out["have_pymupdf"] = True
-    except Exception:
-        pass
+        import fitz; out["have_pymupdf"] = True
+    except Exception: pass
     try:
-        import pdfminer  # pdfminer.six
-        out["have_pdfminer"] = True
-    except Exception:
-        pass
+        import pdfminer; out["have_pdfminer"] = True
+    except Exception: pass
     try:
-        import pdfplumber  # noqa
-        out["have_pdfplumber"] = True
-    except Exception:
-        pass
+        import pdfplumber; out["have_pdfplumber"] = True
+    except Exception: pass
     try:
-        import docx  # python-docx
-        out["have_python_docx"] = True
+        import docx; out["have_python_docx"] = True
+    except Exception: pass
+    try:
+        import openpyxl; out["have_openpyxl"] = True
+    except Exception: pass
+    try:
+        import pytesseract; out["have_pytesseract"] = True
+    except Exception: pass
+    try:
+        from shutil import which
+        out["have_tesseract_cmd"] = bool(which("tesseract"))
     except Exception:
-        pass
+        out["have_tesseract_cmd"] = False
     return out
 
 
-# Optional: quick route to read back the raw file (handy while debugging)
 @router.get("/rag/file/{saved_name}")
 def rag_get_saved(saved_name: str):
     path = os.path.join(UPLOAD_DIR, os.path.basename(saved_name))
@@ -251,5 +248,4 @@ def rag_get_saved(saved_name: str):
             data = f.read()
     except Exception as e:
         raise HTTPException(500, f"Failed to read: {e}")
-    # Just dump as binary/text—only for debugging!
     return PlainTextResponse(data, media_type="application/octet-stream")

@@ -1,58 +1,89 @@
+version: "3.9"
+
 services:
+  # Optional: containerized Ollama (kept on a DIFFERENT host port so it doesn't clash with host Ollama)
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-    ports: ["11434:11434"]
+    ports:
+      - "11435:11434"         # host:container (host 11435 -> container 11434)
     volumes:
       - ollama_models:/root/.ollama
-    # Use GPU if available (Docker Desktop + WSL2 + NVIDIA)
-    gpus: all   # remove this line if CPU-only
+    # Use GPU if available; comment out if CPU-only
+    gpus: all
 
   toolserver:
     build: ./backend
     container_name: toolserver
-    ports: ["8000:8000"]
+    ports:
+      - "8000:8000"           # expose FastAPI to host for browser access
     environment:
-      - RAG_DB_PATH=/data/chroma_v2
+      - RAG_DB_PATH=/data/chroma_v3
       - CHROMA_ANONYMIZED_TELEMETRY=false
       - FILE_SANDBOX=/data/files
       - ENABLE_GPU_METRICS=true
       - VLLM_HOST=vllm
-      - VLLM_PORT=8000 
+      - VLLM_PORT=8000
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+      # --- RAG tuning (lenient while we debug) ---
+      - CHUNK_SIZE=800
+      - CHUNK_OVERLAP=120
+      - MIN_CHUNK_CHARS=1
+
+      # OCR — enable local-only OCR fallback for scanned PDFs
+      - ENABLE_OCR=true
+      - OCR_DPI=260
+
+      # If the backend needs to talk to HOST Ollama directly:
+      - OLLAMA_URL=http://host.docker.internal:11434
     volumes:
       - ./backend:/app
       - toolserver_data:/data
-    depends_on: [ollama]
+    depends_on:
+      - vllm
+    # Ensure host.docker.internal resolves on Linux/WSL as well
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     gpus: all
 
   web:
     build: ./web
     container_name: localgpt-web
-    ports: ["5173:5173"]
+    ports:
+      - "5173:5173"
     environment:
-      - OLLAMA_URL=http://ollama:11434
+      # Talk to HOST Ollama (so we see the models you already have installed locally)
+      - OLLAMA_URL=http://host.docker.internal:11434
+      # Server-to-server calls to the toolserver (inside Docker network)
       - TOOLS_URL=http://toolserver:8000
-      - OPENAI_BASE_URL=http://vllm:8000/v1   # for vLLM (OpenAI-compatible)
-      - OPENAI_API_KEY=placeholder            # vLLM ignores value but header is required
-      - WATCHPACK_POLLING=true                # hot reload on Windows/WSL2
+      # Browser will call toolserver on the host via this public URL
+      - NEXT_PUBLIC_TOOLSERVER_URL=http://localhost:8000
+      # vLLM (OpenAI-compatible) inside Docker network
+      - OPENAI_BASE_URL=http://vllm:8000/v1
+      - OPENAI_API_KEY=placeholder   # vLLM ignores the value but header is required
+      # Reliable hot reload on Windows/WSL2
+      - WATCHPACK_POLLING=true
       - CHOKIDAR_USEPOLLING=true
-      
     volumes:
       - ./web:/usr/src/app
       - /usr/src/app/node_modules
-    depends_on: [ollama, toolserver, vllm]
+    depends_on:
+      - toolserver
+      - vllm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   vllm:
     image: vllm/vllm-openai:latest
     container_name: vllm
-    gpus: all                  # remove if CPU-only (but 20B really wants a GPU)
+    gpus: all                  # remove if CPU-only (20B strongly prefers GPU)
     ports:
-      - "8001:8000"            # host:container
+      - "8001:8000"            # host:container (optional host exposure)
     volumes:
       - vllm_models:/models    # cache downloaded weights
-    # If HF downloads need auth, add:
+    # If Hugging Face downloads need auth, uncomment:
     # environment:
     #   - HF_TOKEN=${HF_TOKEN}
     command: >

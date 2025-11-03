@@ -1,24 +1,39 @@
+# ---------------------------
 # Core server
+# ---------------------------
 fastapi
 uvicorn
 psutil
 aiohttp>=3.9
 python-multipart>=0.0.9
 
+# ---------------------------
 # GPU metrics (optional at runtime)
+# ---------------------------
 pynvml>=11.5.0
 
+# ---------------------------
 # Vector store + embeddings
+# ---------------------------
 chromadb>=0.5.0
 sentence-transformers>=3.0.0
 
-# Document parsing (NO pdfplumber for now)
-pymupdf==1.24.9
-pdfminer.six==20240706
-python-docx>=0.8.11
-pandas>=2.2.2
-openpyxl>=3.1.5
-pypdf
+# ---------------------------
+# Document parsing (lightweight, offline-safe)
+# ---------------------------
+pymupdf==1.24.9          # PDF extraction (fast, native)
+pdfminer.six==20240706   # PDF fallback extractor
+python-docx>=0.8.11      # .docx text extraction
+openpyxl>=3.1.5          # For .xlsx of Excel files
+chardet                  # Optional – helps detect unknown encodings
 
-# Make sure any "Crypto" imports resolve to the maintained lib
+# (Removed)
+# pandas                 # Not needed anymore — replaced by openpyxl/csv decode
+# pypdf                  # Not being used; PyMuPDF + pdfminer covers this
+
+# ---------------------------
+# Encryption/HF compatibility
+# ---------------------------
 pycryptodome
+pillow
+pytesseract

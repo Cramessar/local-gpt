@@ -1,14 +1,57 @@
 import os
-from typing import Tuple
+import io
+from typing import Tuple, Optional
 
-# ---------- Plain text helpers ----------
+# ---------- Text helpers ----------
+
+def _safe_decode(b: bytes) -> str:
+    # Prefer utf-8, try chardet if available, fall back to latin-1
+    try:
+        return b.decode("utf-8", errors="ignore")
+    except Exception:
+        pass
+    try:
+        import chardet  # optional
+        enc = (chardet.detect(b).get("encoding") or "utf-8")
+        return b.decode(enc, errors="ignore")
+    except Exception:
+        return b.decode("latin-1", errors="ignore")
+
 
 def _read_txt(path: str) -> str:
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
+    with open(path, "rb") as f:
+        return _safe_decode(f.read())
+
 
 def _read_md(path: str) -> str:
     return _read_txt(path)
+
+
+def _read_csv(path: str) -> str:
+    # Keep it simple & offline: just decode file bytes (it’s already CSV text)
+    return _read_txt(path)
+
+
+def _read_xlsx(path: str) -> str:
+    """
+    Read Excel using openpyxl (no pandas). Emits a simple, row-wise text dump.
+    """
+    try:
+        import openpyxl
+    except Exception:
+        return ""
+
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            parts.append(f"# Sheet: {ws.title}")
+            for row in ws.iter_rows(values_only=True):
+                parts.append(" ".join("" if v is None else str(v) for v in row))
+        return "\n".join(parts)
+    except Exception:
+        return ""
+
 
 def _read_docx(path: str) -> str:
     try:
@@ -21,122 +64,124 @@ def _read_docx(path: str) -> str:
     except Exception:
         return ""
 
-def _read_csv(path: str) -> str:
-    try:
-        import pandas as pd
-    except Exception:
-        return ""
-    try:
-        df = pd.read_csv(path)
-        return df.to_csv(index=False)
-    except Exception:
-        return ""
-
-def _read_xlsx(path: str) -> str:
-    try:
-        import pandas as pd
-    except Exception:
-        return ""
-    try:
-        xls = pd.read_excel(path, sheet_name=None)
-        parts = []
-        for name, df in xls.items():
-            parts.append(f"# Sheet: {name}\n")
-            parts.append(df.to_csv(index=False))
-        return "\n".join(parts)
-    except Exception:
-        return ""
 
 # ---------- PDF helpers ----------
 
-def _read_pdf_pymupdf(path: str) -> Tuple[str, bool]:
+def _read_pdf_pymupdf(path: str) -> Tuple[str, bool, int]:
     """
-    Returns (text, is_likely_scanned).
+    Returns (text, is_likely_scanned, pages)
     """
     try:
         import fitz  # PyMuPDF
     except Exception:
-        return "", False
+        return "", False, 0
 
-    text = ""
+    text = []
     scanned = False
+    pages = 0
+
     try:
         doc = fitz.open(path)
+        pages = doc.page_count
         for page in doc:
             page_text = page.get_text("text") or ""
-            text += page_text + "\n"
             if not page_text.strip():
-                # no text; if images exist, likely scanned
-                if page.get_images(full=True):
-                    scanned = True
+                # Heuristic: no selectable text, but page has images -> likely scanned
+                try:
+                    if page.get_images(full=True):
+                        scanned = True
+                except Exception:
+                    pass
+            text.append(page_text)
     except Exception:
-        return "", False
+        return "", False, pages
 
-    return text.strip(), scanned
+    return ("\n".join(text)).strip(), scanned, pages
 
-def _read_pdf_pdfminer(path: str) -> str:
+
+def _read_pdf_pdfminer(path: str) -> Tuple[str, int]:
     """
-    Fallback pure-Python extractor for tricky PDFs.
+    Fallback PDF extractor using pdfminer.six (pure Python).
+    Returns (text, pages_guess)
     """
     try:
         from pdfminer.high_level import extract_text
     except Exception:
-        return ""
+        return "", 0
     try:
-        return (extract_text(path) or "").strip()
+        # pdfminer doesn't expose page count easily here; we skip it.
+        return (extract_text(path) or "").strip(), 0
     except Exception:
-        return ""
+        return "", 0
+
 
 # ---------- Unified entry point ----------
 
 def extract_text_from_file(path: str) -> Tuple[str, dict]:
     """
     Extract text and return (text, meta).
-    meta = {"ext": ".pdf", "note": "...", "engine": "pymupdf|pdfminer|plain"}
+    meta = {
+      "ext": ".pdf",
+      "note": "...",
+      "engine": "pymupdf|pdfminer|docx|xlsx|csv|text",
+      "pages": int,
+      "chars": int
+    }
     """
     ext = os.path.splitext(path)[1].lower()
-    meta = {"ext": ext, "note": "", "engine": ""}
+    meta = {"ext": ext, "note": "", "engine": "", "pages": 0, "chars": 0}
 
+    # ---- Plain/structured text types
     if ext == ".txt":
-        meta["engine"] = "plain"
+        meta["engine"] = "text"
         txt = _read_txt(path)
 
     elif ext == ".md":
-        meta["engine"] = "plain"
+        meta["engine"] = "text"
         txt = _read_md(path)
 
-    elif ext == ".docx":
-        meta["engine"] = "python-docx"
-        meta["note"] = "docx parsed"
-        txt = _read_docx(path)
-
     elif ext == ".csv":
-        meta["engine"] = "pandas"
-        meta["note"] = "csv parsed to text"
+        meta["engine"] = "csv"
+        meta["note"] = "csv decoded to text"
         txt = _read_csv(path)
 
     elif ext in (".xlsx", ".xlsm", ".xls"):
-        meta["engine"] = "pandas"
+        meta["engine"] = "xlsx"
         meta["note"] = "excel parsed to text"
         txt = _read_xlsx(path)
 
+    elif ext == ".docx":
+        meta["engine"] = "docx"
+        meta["note"] = "docx parsed"
+        txt = _read_docx(path)
+
+    # ---- PDFs
     elif ext == ".pdf":
-        # Try PyMuPDF first
-        txt, scanned = _read_pdf_pymupdf(path)
+        txt, scanned, pages = _read_pdf_pymupdf(path)
         meta["engine"] = "pymupdf"
+        meta["pages"] = pages
         if scanned and not txt:
             meta["note"] = "pdf likely scanned (no selectable text)"
 
-        # Fallback to pdfminer if empty
         if not txt:
-            fallback = _read_pdf_pdfminer(path)
-            if fallback:
-                txt = fallback
+            fallback_txt, _ = _read_pdf_pdfminer(path)
+            if fallback_txt:
+                txt = fallback_txt
                 meta["engine"] = "pdfminer"
                 if not meta["note"]:
                     meta["note"] = "parsed by pdfminer (fallback)"
 
     else:
-        txt = ""
+        # Unknown extension → try best-effort text decode
+        meta["engine"] = "text"
+        try:
+            with open(path, "rb") as f:
+                txt = _safe_decode(f.read())
+            meta["note"] = "best-effort decode"
+        except Exception:
+            txt = ""
 
-    return (txt or "").strip(), meta
+    txt = (txt or "").strip()
+    meta["chars"] = len(txt)
+
+    return txt, meta

@@ -5,10 +5,16 @@ import json
 import psutil
 import datetime
 import contextlib
+import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
+
+# ---- Upload dir (make sure it's real and writable) ----------------------------
+FILE_SANDBOX = os.getenv("FILE_SANDBOX", "/data/files")
+UPLOAD_DIR = Path(FILE_SANDBOX)
 
 # ---- GPU metrics (optional) ---------------------------------------------------
 ENABLE_GPU = os.getenv("ENABLE_GPU_METRICS", "true").lower() in ("1", "true", "yes")
@@ -44,7 +50,15 @@ app.add_middleware(
 from tool_router import router as tools_router  # noqa: E402
 from rag_routes import router as rag_router      # noqa: E402
 
-# ---- Helper: vLLM health ------------------------------------------------------
+# ---- Logging ------------------------------------------------------------------
+logger = logging.getLogger("toolserver")
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
+
+# ---- vLLM health --------------------------------------------------------------
 def _vllm_base():
     host = os.getenv("VLLM_HOST", "vllm")
     port = int(os.getenv("VLLM_PORT", "8000"))
@@ -68,6 +82,19 @@ async def _check_vllm_ready(timeout=0.8):
         pass
     return False, None
 
+# ---- Startup: ensure FILE_SANDBOX exists & is writable ------------------------
+@app.on_event("startup")
+def _ensure_upload_dir():
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        # quick writability probe
+        probe = UPLOAD_DIR / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        logger.info("📁 FILE_SANDBOX resolved to %s (writable ✅)", str(UPLOAD_DIR))
+    except Exception as e:
+        logger.exception("📁 FILE_SANDBOX %s is not writable ❌: %s", str(UPLOAD_DIR), e)
+
 # ---- Basic routes -------------------------------------------------------------
 @app.get("/")
 def root():
@@ -77,6 +104,17 @@ def root():
 async def health():
     ready, _ = await _check_vllm_ready()
     return JSONResponse({"ok": True, "vllm_ready": bool(ready)})
+
+@app.get("/debug/paths")
+def debug_paths():
+    """Handy while we debug uploads/volumes."""
+    return {
+        "FILE_SANDBOX": str(UPLOAD_DIR),
+        "exists": UPLOAD_DIR.exists(),
+        "is_dir": UPLOAD_DIR.is_dir(),
+        "cwd": str(Path(".").resolve()),
+        "listdir": sorted([p.name for p in UPLOAD_DIR.iterdir()]) if UPLOAD_DIR.exists() else [],
+    }
 
 # ---- Resource Monitor: SSE (CPU/Mem + optional GPU) ---------------------------
 @app.get("/metrics/sse")

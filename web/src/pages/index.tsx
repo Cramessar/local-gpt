@@ -1,19 +1,21 @@
+// pages/index.tsx
 import { useEffect, useRef, useState } from "react";
 import ResourcePanel from "../components/ResourcePanel";
-import DocTools from "../components/DocTools";
+import DocsRagPanel from "../components/DocsRagPanel";
 
 type ChatMsg = { role: "system" | "user" | "assistant" | "tool"; content: string; name?: string };
 
 const DEFAULT_PROVIDER: "ollama" | "openai" = "openai";
-const DEFAULT_MODEL = "openai/gpt-oss-20b";
+const DEFAULT_OPENAI_MODEL = "openai/gpt-oss-20b";
+const DEFAULT_OLLAMA_FALLBACK = "llama3.1";
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMsg[]>([
-    { role: "system", content: "You are LocalGPT." }
+    { role: "system", content: "You are LocalGPT." },
   ]);
   const [input, setInput] = useState("");
   const [provider, setProvider] = useState<"ollama" | "openai">(DEFAULT_PROVIDER);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState<string>(DEFAULT_OPENAI_MODEL);
   const [isSending, setIsSending] = useState(false);
   const [stats, setStats] = useState<{ latencyMs?: number; tokens?: number }>({});
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -22,6 +24,76 @@ export default function Home() {
   const [useDocs, setUseDocs] = useState(true);
   const [ragCollection, setRagCollection] = useState("default");
   const [ragK, setRagK] = useState(5);
+
+  // Ollama models
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  async function loadOllamaModels() {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const r = await fetch("/api/ollama-models");
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.message || `HTTP ${r.status}`);
+      const names: string[] = data?.models || [];
+      setOllamaModels(names);
+
+      if (provider === "ollama") {
+        if (names.length) {
+          const preferred = names.find((n) => /llama3(\.1)?/i.test(n)) || names[0];
+          setModel((prev) => (prev && names.includes(prev) ? prev : preferred));
+        } else {
+          setModel(DEFAULT_OLLAMA_FALLBACK);
+        }
+      }
+    } catch (e: any) {
+      setModelsError(e?.message || String(e));
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  // Load models when switching to Ollama
+  useEffect(() => {
+    if (provider === "ollama") {
+      loadOllamaModels();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
+
+  // Pick last-used model per provider (or default)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (provider === "openai") {
+      const saved = localStorage.getItem("lastOpenAIModel");
+      setModel(saved || DEFAULT_OPENAI_MODEL);
+    } else {
+      const saved = localStorage.getItem("lastOllamaModel");
+      if (saved) {
+        setModel(saved);
+      } else if (ollamaModels.length) {
+        const preferred = ollamaModels.find((n) => /llama3(\.1)?/i.test(n)) || ollamaModels[0];
+        setModel(preferred);
+      } else {
+        setModel(DEFAULT_OLLAMA_FALLBACK);
+      }
+    }
+  }, [provider, ollamaModels]);
+
+  // Persist last-used model per provider
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!model) return;
+
+    if (provider === "openai") {
+      localStorage.setItem("lastOpenAIModel", model);
+    } else if (provider === "ollama") {
+      localStorage.setItem("lastOllamaModel", model);
+    }
+  }, [model, provider]);
 
   async function send() {
     const text = input.trim();
@@ -42,17 +114,21 @@ export default function Home() {
           model,
           rag: useDocs,
           ragCollection,
-          ragK
-        })
+          ragK,
+        }),
       });
       const data = await res.json();
       const content = data?.message?.content ?? "(no reply)";
-      const totalTokens = data?.usage?.total_tokens
-        ?? (data?.usage?.prompt_tokens || 0) + (data?.usage?.completion_tokens || 0);
+      const totalTokens =
+        data?.usage?.total_tokens ??
+        (data?.usage?.prompt_tokens || 0) + (data?.usage?.completion_tokens || 0);
       setStats({ latencyMs: data?.latencyMs, tokens: totalTokens });
-      setMessages(m => [...m, { role: "assistant", content }]);
+      setMessages((m) => [...m, { role: "assistant", content }]);
     } catch (e: any) {
-      setMessages(m => [...m, { role: "assistant", content: `⚠️ Error: ${e?.message || e}` }]);
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: `⚠️ Error: ${e?.message || e}` },
+      ]);
     } finally {
       setIsSending(false);
       setTimeout(() => scrollRef.current?.scrollTo({ top: 1e9, behavior: "smooth" }), 0);
@@ -66,18 +142,20 @@ export default function Home() {
     }
   }
 
-  const visibleMsgs = messages.filter(m => m.role !== "system");
+  const visibleMsgs = messages.filter((m) => m.role !== "system");
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
-      <h1 className="gradient-text" style={{ fontSize: 32, fontWeight: 800, marginBottom: 12 }}>Local GPT</h1>
+      <h1 className="gradient-text" style={{ fontSize: 32, fontWeight: 800, marginBottom: 12 }}>
+        Local GPT
+      </h1>
 
       <div className="panel" style={{ padding: 10, marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <label className="meta">Provider:</label>
           <select
             value={provider}
-            onChange={e => setProvider(e.target.value as any)}
+            onChange={(e) => setProvider(e.target.value as any)}
             className="input"
             style={{ width: 240 }}
           >
@@ -85,14 +163,52 @@ export default function Home() {
             <option value="ollama">Ollama</option>
           </select>
 
-          <label className="meta" style={{ marginLeft: 8 }}>Model:</label>
-          <input
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            placeholder={provider === "openai" ? "openai/gpt-oss-20b" : "llama3.1"}
-            className="input"
-            style={{ flex: 1, minWidth: 280 }}
-          />
+          <label className="meta" style={{ marginLeft: 8 }}>
+            Model:
+          </label>
+
+          {provider === "ollama" ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 280 }}>
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="input"
+                style={{ flex: 1, minWidth: 240 }}
+                disabled={modelsLoading || !!modelsError}
+              >
+                {ollamaModels.length === 0 && !modelsLoading && !modelsError && (
+                  <option value="" disabled>
+                    (no models found)
+                  </option>
+                )}
+                {ollamaModels.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={loadOllamaModels}
+                className="btn"
+                style={{ whiteSpace: "nowrap" }}
+                title="Refresh Ollama models"
+              >
+                {modelsLoading ? "Refreshing…" : "Refresh"}
+              </button>
+              {modelsError && (
+                <span className="meta" style={{ color: "#ff6b6b" }}>{modelsError}</span>
+              )}
+            </div>
+          ) : (
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={DEFAULT_OPENAI_MODEL}
+              className="input"
+              style={{ flex: 1, minWidth: 280 }}
+            />
+          )}
 
           <div className="meta" style={{ marginLeft: "auto" }}>
             {stats.latencyMs != null && <>Latency: {stats.latencyMs}ms&nbsp;•&nbsp;</>}
@@ -101,12 +217,20 @@ export default function Home() {
         </div>
 
         {/* RAG controls */}
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            marginTop: 8,
+            flexWrap: "wrap",
+          }}
+        >
           <label className="meta" style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <input
               type="checkbox"
               checked={useDocs}
-              onChange={e => setUseDocs(e.target.checked)}
+              onChange={(e) => setUseDocs(e.target.checked)}
             />
             Use docs (RAG)
           </label>
@@ -126,10 +250,10 @@ export default function Home() {
                 min={1}
                 max={10}
                 value={ragK}
-                onChange={(e) => setRagK(parseInt(e.target.value || "5"))}
+                onChange={(e) => setRagK(parseInt(e.target.value || "5", 10))}
                 placeholder="k"
               />
-              <span className="meta" style={{ opacity: .8 }}>
+              <span className="meta" style={{ opacity: 0.8 }}>
                 (Upload docs in the sidebar; context is auto-injected)
               </span>
             </>
@@ -142,11 +266,7 @@ export default function Home() {
         <div className="panel" style={{ padding: 0 }}>
           <div
             ref={scrollRef}
-            style={{
-              height: "65vh",
-              padding: 12,
-              overflowY: "auto",
-            }}
+            style={{ height: "65vh", padding: 12, overflowY: "auto" }}
           >
             {visibleMsgs.length === 0 ? (
               <div className="meta">No messages yet. Type below and press Enter.</div>
@@ -157,7 +277,7 @@ export default function Home() {
                   style={{
                     display: "flex",
                     justifyContent: m.role === "user" ? "flex-end" : "flex-start",
-                    margin: "10px 0"
+                    margin: "10px 0",
                   }}
                 >
                   <div
@@ -175,10 +295,17 @@ export default function Home() {
           </div>
 
           {/* Input row */}
-          <div style={{ display: "flex", gap: 8, padding: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              padding: 12,
+              borderTop: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
             <input
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKey}
               placeholder="Type a message… (Enter to send)"
               className="input"
@@ -188,7 +315,7 @@ export default function Home() {
               onClick={send}
               disabled={isSending || !input.trim()}
               className="btn btn-primary"
-              style={{ opacity: isSending || !input.trim() ? .6 : 1 }}
+              style={{ opacity: isSending || !input.trim() ? 0.6 : 1 }}
             >
               {isSending ? "Sending…" : "Send"}
             </button>
@@ -198,9 +325,13 @@ export default function Home() {
         {/* Right column: Monitor + Docs */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <ResourcePanel />
-          <DocTools /> {/* Upload panel (no ask button now) */}
+          <DocsRagPanel />
         </div>
       </div>
+
+      <footer className="w-full text-center text-xs text-gray-500 mt-8 mb-4 opacity-80">
+        Made by <span className="font-semibold">Christopher Ramessar</span> — because boredom needed a hobby.
+      </footer>
     </div>
   );
 }

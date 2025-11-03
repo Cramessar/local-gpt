@@ -138,5 +138,6 @@ sequenceDiagram
 📄 License
 MIT — free to modify, share, and build on.
 
-Made with ☕ + 🤖 by Christopher Ramessar
+Fueled by GFuel, peppermint candies, and questionable sleep cycles — Crafted by Christopher Ramessar
+
 Because boredom needed a hobby.
